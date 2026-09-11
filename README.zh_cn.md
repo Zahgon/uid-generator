@@ -2,12 +2,12 @@ UidGenerator
 ==========================
 [In English](README.md)
 
-UidGenerator是Java实现的, 基于[Snowflake](https://github.com/twitter/snowflake)算法的唯一ID生成器。UidGenerator以组件形式工作在应用项目中,
+UidGenerator是TypeScript实现的, 基于[Snowflake](https://github.com/twitter/snowflake)算法的唯一ID生成器。UidGenerator以组件形式工作在应用项目中,
 支持自定义workerId位数和初始化策略, 从而适用于[docker](https://www.docker.com/)等虚拟化环境下实例自动重启、漂移等场景。
 在实现上, UidGenerator通过借用未来时间来解决sequence天然存在的并发限制; 采用RingBuffer来缓存已生成的UID, 并行化UID的生产和消费,
 同时对CacheLine补齐，避免了由RingBuffer带来的硬件级「伪共享」问题. 最终单机QPS可达<font color=red>600万</font>。
 
-依赖版本：[Java8](http://www.oracle.com/technetwork/java/javase/downloads/jdk8-downloads-2133151.html)及以上版本,
+依赖版本：[Node.js 22.5](https://nodejs.org/)及以上版本,
 [MySQL](https://dev.mysql.com/downloads/mysql/)(内置WorkerID分配器, 启动阶段通过DB进行分配; 如自定义实现, 则DB非必选依赖）
 
 Snowflake算法
@@ -27,7 +27,9 @@ Snowflake算法描述：指定机器 & 同一时刻 & 某一并发序列，是�
 * sequence (13 bits)   
   每秒下的并发序列，13 bits可支持每秒8192个并发。
   
-**以上参数均可通过Spring进行自定义**
+**以上参数均可通过生成器的setter进行自定义**
+
+UID为有符号64位整数, 公开API以```bigint```返回: ```number```无法在不丢失精度的情况下表示它。
 
 
 CachedUidGenerator
@@ -66,18 +68,14 @@ CachedUidGenerator采用了双RingBuffer，Uid-RingBuffer用于存储Uid、Flag-
 Quick Start
 ------------
 
-这里介绍如何在基于Spring的项目中使用UidGenerator, 具体流程如下:<br/>
+这里介绍如何在基于Node.js的项目中使用UidGenerator, 具体流程如下:<br/>
 
 ### 步骤1: 安装依赖
-先下载[Java8](http://www.oracle.com/technetwork/java/javase/downloads/jdk8-downloads-2133151.html), [MySQL](https://dev.mysql.com/downloads/mysql/)和[Maven](https://maven.apache.org/download.cgi)
+先下载[Node.js 22.5+](https://nodejs.org/)和[MySQL](https://dev.mysql.com/downloads/mysql/)
 
-#### 设置环境变量
-maven无须安装, 设置好MAVEN_HOME即可. 可像下述脚本这样设置JAVA_HOME和MAVEN_HOME, 如已设置请忽略.
+#### 安装项目依赖
 ```shell
-export MAVEN_HOME=/xxx/xxx/software/maven/apache-maven-3.3.9
-export PATH=$MAVEN_HOME/bin:$PATH
-JAVA_HOME="/Library/Java/JavaVirtualMachines/jdk1.8.0_91.jdk/Contents/Home";
-export JAVA_HOME;
+npm install
 ```
 
 ### 步骤2: 创建表WORKER_NODE
@@ -101,148 +99,88 @@ PRIMARY KEY(ID)
  COMMENT='DB WorkerID Assigner for UID Generator',ENGINE = INNODB;
 ```
 
-修改[mysql.properties](src/test/resources/uid/mysql.properties)配置中, jdbc.url, jdbc.username和jdbc.password, 确保库地址, 名称, 端口号, 用户名和密码正确.
+修改[mysql.properties](test/resources/uid/mysql.properties)配置中, jdbc.url, jdbc.username和jdbc.password, 确保库地址, 名称, 端口号, 用户名和密码正确.
+并删除[zz-local.properties](test/resources/uid/zz-local.properties) —— 该文件将数据源覆盖为无需服务端的SQLite, 以便单测可以无人值守地运行.
 
-### 步骤3: 修改Spring配置
-提供了两种生成器: [DefaultUidGenerator](src/main/java/com/baidu/fsg/uid/impl/DefaultUidGenerator.java)、[CachedUidGenerator](src/main/java/com/baidu/fsg/uid/impl/CachedUidGenerator.java)。如对UID生成性能有要求, 请使用CachedUidGenerator<br/>
-对应Spring配置分别为: [default-uid-spring.xml](src/test/resources/uid/default-uid-spring.xml)、[cached-uid-spring.xml](src/test/resources/uid/cached-uid-spring.xml)
+### 步骤3: 修改配置
+提供了两种生成器: [DefaultUidGenerator](src/impl/default-uid-generator.ts)、[CachedUidGenerator](src/impl/cached-uid-generator.ts)。如对UID生成性能有要求, 请使用CachedUidGenerator<br/>
+对应配置分别为: [default-uid-spring.ts](test/resources/uid/default-uid-spring.ts)、[cached-uid-spring.ts](test/resources/uid/cached-uid-spring.ts)
 
 #### DefaultUidGenerator配置
-```xml
-<!-- DefaultUidGenerator -->
-<bean id="defaultUidGenerator" class="com.baidu.fsg.uid.impl.DefaultUidGenerator" lazy-init="false">
-    <property name="workerIdAssigner" ref="disposableWorkerIdAssigner"/>
+```ts
+const defaultUidGenerator = new DefaultUidGenerator();
+defaultUidGenerator.setWorkerIdAssigner(disposableWorkerIdAssigner);
 
-    <!-- Specified bits & epoch as your demand. No specified the default value will be used -->
-    <property name="timeBits" value="29"/>
-    <property name="workerBits" value="21"/>
-    <property name="seqBits" value="13"/>
-    <property name="epochStr" value="2016-09-20"/>
-</bean>
- 
-<!-- 用完即弃的WorkerIdAssigner，依赖DB操作 -->
-<bean id="disposableWorkerIdAssigner" class="com.baidu.fsg.uid.worker.DisposableWorkerIdAssigner" />
+// 指定bits位数与epoch, 未指定则使用默认值
+defaultUidGenerator.setTimeBits(29);
+defaultUidGenerator.setWorkerBits(21);
+defaultUidGenerator.setSeqBits(13);
+defaultUidGenerator.setEpochStr('2016-09-20');
 
+await defaultUidGenerator.afterPropertiesSet();
 ```
 
 #### CachedUidGenerator配置
-```xml
-<!-- CachedUidGenerator -->
-<bean id="cachedUidGenerator" class="com.baidu.fsg.uid.impl.CachedUidGenerator">
-    <property name="workerIdAssigner" ref="disposableWorkerIdAssigner" />
- 
-    <!-- 以下为可选配置, 如未指定将采用默认值 -->
-    <!-- Specified bits & epoch as your demand. No specified the default value will be used -->
-    <property name="timeBits" value="29"/>
-    <property name="workerBits" value="21"/>
-    <property name="seqBits" value="13"/>
-    <property name="epochStr" value="2016-09-20"/>
- 
-    <!-- RingBuffer size扩容参数, 可提高UID生成的吞吐量. -->
-    <!-- 默认:3， 原bufferSize=8192, 扩容后bufferSize= 8192 << 3 = 65536 -->
-    <property name="boostPower" value="3"></property>
- 
-    <!-- 指定何时向RingBuffer中填充UID, 取值为百分比(0, 100), 默认为50 -->
-    <!-- 举例: bufferSize=1024, paddingFactor=50 -> threshold=1024 * 50 / 100 = 512. -->
-    <!-- 当环上可用UID数量 < 512时, 将自动对RingBuffer进行填充补全 -->
-    <property name="paddingFactor" value="50"></property>
- 
-    <!-- 另外一种RingBuffer填充时机, 在Schedule线程中, 周期性检查填充 -->
-    <!-- 默认:不配置此项, 即不实用Schedule线程. 如需使用, 请指定Schedule线程时间间隔, 单位:秒 -->
-    <property name="scheduleInterval" value="60"></property>
- 
-    <!-- 拒绝策略: 当环已满, 无法继续填充时 -->
-    <!-- 默认无需指定, 将丢弃Put操作, 仅日志记录. 如有特殊需求, 请实现RejectedPutBufferHandler接口(支持Lambda表达式) -->
-    <property name="rejectedPutBufferHandler" ref="XxxxYourPutRejectPolicy"></property>
- 
-    <!-- 拒绝策略: 当环已空, 无法继续获取时 -->
-    <!-- 默认无需指定, 将记录日志, 并抛出UidGenerateException异常. 如有特殊需求, 请实现RejectedTakeBufferHandler接口(支持Lambda表达式) -->
-    <property name="rejectedTakeBufferHandler" ref="XxxxYourTakeRejectPolicy"></property>
- 
-</bean>
- 
-<!-- 用完即弃的WorkerIdAssigner, 依赖DB操作 -->
-<bean id="disposableWorkerIdAssigner" class="com.baidu.fsg.uid.worker.DisposableWorkerIdAssigner" />
- 
+```ts
+const cachedUidGenerator = new CachedUidGenerator();
+cachedUidGenerator.setWorkerIdAssigner(disposableWorkerIdAssigner);
+
+cachedUidGenerator.setTimeBits(29);
+cachedUidGenerator.setWorkerBits(21);
+cachedUidGenerator.setSeqBits(13);
+cachedUidGenerator.setEpochStr('2016-09-20');
+
+// RingBuffer size扩容参数, 默认:3, 原bufferSize=8192, 扩容后bufferSize= 8192 << 3 = 65536
+cachedUidGenerator.setBoostPower(3);
+
+// 指定何时向RingBuffer中填充UID, 取值为百分比(0, 100), 默认为50
+cachedUidGenerator.setPaddingFactor(50);
+
+// 另外一种RingBuffer填充时机, 周期性检查填充, 单位:秒
+cachedUidGenerator.setScheduleInterval(60);
+
+// 拒绝策略: 当环已满/已空时
+cachedUidGenerator.setRejectedPutBufferHandler(xxxxYourPutRejectPolicy);
+cachedUidGenerator.setRejectedTakeBufferHandler(xxxxYourTakeRejectPolicy);
+
+await cachedUidGenerator.afterPropertiesSet();
+
+// 关闭时
+await cachedUidGenerator.destroy();
 ```
 
-#### Mybatis配置
-[mybatis-spring.xml](src/test/resources/uid/mybatis-spring.xml)配置说明如下:
+#### 数据源配置
+数据源沿用原Spring/MyBatis配置的属性名, 位于[mysql.properties](test/resources/uid/mysql.properties),
+驱动由```jdbc.url```的scheme决定:
 
-```xml
-<!-- Spring annotation扫描 -->
-<context:component-scan base-package="com.baidu.fsg.uid" />
-
-<bean id="sqlSessionFactory" class="org.mybatis.spring.SqlSessionFactoryBean">
-    <property name="dataSource" ref="dataSource" />
-    <property name="mapperLocations" value="classpath:/META-INF/mybatis/mapper/M_WORKER*.xml" />
-</bean>
-
-<!-- 事务相关配置 -->
-<tx:annotation-driven transaction-manager="transactionManager" order="1" />
-
-<bean id="transactionManager" class="org.springframework.jdbc.datasource.DataSourceTransactionManager">
-	<property name="dataSource" ref="dataSource" />
-</bean>
-
-<!-- Mybatis Mapper扫描 -->
-<bean class="org.mybatis.spring.mapper.MapperScannerConfigurer">
-	<property name="annotationClass" value="org.springframework.stereotype.Repository" />
-	<property name="basePackage" value="com.baidu.fsg.uid.worker.dao" />
-	<property name="sqlSessionFactoryBeanName" value="sqlSessionFactory" />
-</bean>
-
-<!-- 数据源配置 -->
-<bean id="dataSource" parent="abstractDataSource">
-	<property name="driverClassName" value="${mysql.driver}" />
-	<property name="maxActive" value="${jdbc.maxActive}" />
-	<property name="url" value="${jdbc.url}" />
-	<property name="username" value="${jdbc.username}" />
-	<property name="password" value="${jdbc.password}" />
-</bean>
-
-<bean id="abstractDataSource" class="com.alibaba.druid.pool.DruidDataSource" destroy-method="close">
-	<property name="filters" value="${datasource.filters}" />
-	<property name="defaultAutoCommit" value="${datasource.defaultAutoCommit}" />
-	<property name="initialSize" value="${datasource.initialSize}" />
-	<property name="minIdle" value="${datasource.minIdle}" />
-	<property name="maxWait" value="${datasource.maxWait}" />
-	<property name="testWhileIdle" value="${datasource.testWhileIdle}" />
-	<property name="testOnBorrow" value="${datasource.testOnBorrow}" />
-	<property name="testOnReturn" value="${datasource.testOnReturn}" />
-	<property name="validationQuery" value="${datasource.validationQuery}" />
-	<property name="timeBetweenEvictionRunsMillis" value="${datasource.timeBetweenEvictionRunsMillis}" />
-	<property name="minEvictableIdleTimeMillis" value="${datasource.minEvictableIdleTimeMillis}" />
-	<property name="logAbandoned" value="${datasource.logAbandoned}" />
-	<property name="removeAbandoned" value="${datasource.removeAbandoned}" />
-	<property name="removeAbandonedTimeout" value="${datasource.removeAbandonedTimeout}" />
-</bean>
-
-<bean id="batchSqlSession" class="org.mybatis.spring.SqlSessionTemplate">
-	<constructor-arg index="0" ref="sqlSessionFactory" />
-	<constructor-arg index="1" value="BATCH" />
-</bean>
+```ts
+const properties = loadProperties(uidPropertiesDir);
+const sqlSession = await openSqlSession(properties);
+const workerNodeDAO = new SqlWorkerNodeDAO(sqlSession);
 ```
 
 ### 步骤4: 运行示例单测
-运行单测[CachedUidGeneratorTest](src/test/java/com/baidu/fsg/uid/CachedUidGeneratorTest.java), 展示UID生成、解析等功能
-```java
-@Resource
-private UidGenerator uidGenerator;
+运行单测[cached-uid-generator.test.ts](test/cached-uid-generator.test.ts), 展示UID生成、解析等功能
+```ts
+// Generate UID
+const uid = uidGenerator.getUID();
 
-@Test
-public void testSerialGenerate() {
-    // Generate UID
-    long uid = uidGenerator.getUID();
+// Parse UID into [Timestamp, WorkerId, Sequence]
+// {"UID":"180363646902239241","timestamp":"2017-01-19 12:15:46","workerId":"4","sequence":"9"}
+process.stdout.write(`${uidGenerator.parseUID(uid)}\n`);
+```
 
-    // Parse UID into [Timestamp, WorkerId, Sequence]
-    // {"UID":"180363646902239241","parsed":{    "timestamp":"2017-01-19 12:15:46",    "workerId":"4",    "sequence":"9"        }}
-    System.out.println(uidGenerator.parseUID(uid));
-
-}
+```shell
+npm run typecheck   # tsc --noEmit, strict
+npm run lint        # eslint
+npm test            # vitest run
+npm run coverage    # vitest run --coverage
+npm run build       # tsc -> dist/
 ```
 
 ### 关于UID比特分配的建议
+注意: 类默认值(```timeBits=28```, epoch为```2016-05-20```)已于2024-11-20 21:24:16耗尽, 请显式指定```timeBits```与```epochStr```。
+
 对于并发数要求不高、期望长期使用的应用, 可增加```timeBits```位数, 减少```seqBits```位数. 例如节点采取用完即弃的WorkerIdAssigner策略, 重启频率为12次/天,
 那么配置成```{"workerBits":23,"timeBits":31,"seqBits":9}```时, 可支持28个节点以整体并发量14400 UID/s的速度持续运行68年.
 
